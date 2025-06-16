@@ -1,216 +1,308 @@
 #include <iostream>
 #include <string>
-#include <thread>
 #include <chrono>
 #include <fstream>
 #include <sstream>
 #include <ctime>
 #include <iomanip>
 #include <atomic>
+#include <vector>
+#include <cstring>
+
+// Windows includes
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <process.h>
 
+// Link required libraries
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "shell32.lib")
 
+// Safe string copy function for cross-platform compatibility
+void safe_strcpy(char* dest, size_t dest_size, const char* src) {
+    size_t len = strlen(src);
+    if (len >= dest_size) {
+        len = dest_size - 1;
+    }
+    memcpy(dest, src, len);
+    dest[len] = '\0';
+}
+
 class WindowsClient {
 private:
+    // Network
     SOCKET clientSocket;
-    std::atomic<bool> connected;
-    std::atomic<bool> running;
+    volatile bool connected;
+    volatile bool shouldRun;
     std::string serverHost;
     int serverPort;
-    std::string logFilePath;
     
-    // System tray
-    NOTIFYICONDATA nid;
+    // Logging
+    std::string logFilePath;
+    CRITICAL_SECTION logMutex;
+    
+    // System Tray
     HWND hwnd;
+    NOTIFYICONDATAA nid;
     static const UINT WM_TRAYICON = WM_USER + 1;
     static const UINT ID_TRAY_EXIT = 1001;
     
+    // Threads
+    HANDLE connectionThread;
+    HANDLE pingThread;
+    HANDLE messageThread;
+    
 public:
     WindowsClient(const std::string& host = "127.0.0.1", int port = 9998) 
-        : serverHost(host), serverPort(port), connected(false), running(true), clientSocket(INVALID_SOCKET) {
+        : serverHost(host), serverPort(port), connected(false), shouldRun(true), 
+          clientSocket(INVALID_SOCKET), hwnd(nullptr),
+          connectionThread(NULL), pingThread(NULL), messageThread(NULL) {
         
-        // Initialize Winsock
-        WSADATA wsaData;
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-            logMessage("Failed to initialize Winsock");
-            exit(1);
-        }
-        
-        // Setup log file path
-        setupLogPath();
-        
-        // Setup system tray
+        InitializeCriticalSection(&logMutex);
+        initializeWinsock();
+        setupLogFile();
         setupSystemTray();
         
-        logMessage("Windows Client initialized");
+        log("Client initialized - " + serverHost + ":" + std::to_string(serverPort));
     }
     
     ~WindowsClient() {
-        Shell_NotifyIcon(NIM_DELETE, &nid);
-        if (clientSocket != INVALID_SOCKET) {
-            closesocket(clientSocket);
-        }
-        WSACleanup();
+        cleanup();
+        DeleteCriticalSection(&logMutex);
     }
     
     void start() {
-        logMessage("Starting client connection attempts...");
+        log("Starting client...");
         
         // Start connection thread
-        std::thread connectionThread(&WindowsClient::connectionLoop, this);
-        connectionThread.detach();
-        
-        // Start message loop for system tray
-        MSG msg;
-        while (running.load()) {
-            if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-                if (msg.message == WM_QUIT) {
-                    running = false;
-                    break;
-                }
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
-            Sleep(100);
+        connectionThread = (HANDLE)_beginthreadex(NULL, 0, connectionThreadProc, this, 0, NULL);
+        if (connectionThread == NULL) {
+            log("Failed to create connection thread");
+            return;
         }
         
-        logMessage("Client shutting down...");
+        // Message loop for system tray
+        MSG msg;
+        while (shouldRun) {
+            BOOL result = GetMessage(&msg, nullptr, 0, 0);
+            if (result <= 0) break;
+            
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        
+        cleanup();
     }
     
 private:
-    void setupLogPath() {
-        char appDataPath[MAX_PATH];
-        if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appDataPath) == S_OK) {
-            logFilePath = std::string(appDataPath) + "\\client_log.txt";
+    void initializeWinsock() {
+        WSADATA wsaData;
+        int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+        if (result != 0) {
+            std::cerr << "WSAStartup failed: " << result << std::endl;
+            exit(1);
+        }
+    }
+    
+    void setupLogFile() {
+        char appData[MAX_PATH];
+        if (SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, appData) == S_OK) {
+            logFilePath = std::string(appData) + "\\WindowsClient.log";
         } else {
-            logFilePath = "client_log.txt";
+            logFilePath = "WindowsClient.log";
         }
     }
     
     void setupSystemTray() {
-        // Create invisible window for message handling
-        WNDCLASS wc = {};
-        wc.lpfnWndProc = WindowProc;
-        wc.hInstance = GetModuleHandle(NULL);
-        wc.lpszClassName = L"ClientTrayWindow";
-        RegisterClass(&wc);
+        // Register window class
+        WNDCLASSA wc = {};
+        wc.lpfnWndProc = windowProc;
+        wc.hInstance = GetModuleHandleA(nullptr);
+        wc.lpszClassName = "WindowsClientTray";
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         
-        hwnd = CreateWindow(L"ClientTrayWindow", L"Client", 0, 0, 0, 0, 0, NULL, NULL, GetModuleHandle(NULL), this);
+        RegisterClassA(&wc);
         
-        // Setup system tray icon
+        // Create message window
+        hwnd = CreateWindowA("WindowsClientTray", "Windows Client", 0, 
+                            0, 0, 0, 0, HWND_MESSAGE, nullptr, 
+                            GetModuleHandleA(nullptr), this);
+        
+        if (!hwnd) {
+            log("Failed to create window");
+            return;
+        }
+        
+        // Setup tray icon
         memset(&nid, 0, sizeof(nid));
         nid.cbSize = sizeof(nid);
         nid.hWnd = hwnd;
         nid.uID = 1;
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-        strcpy_s(nid.szTip, "Server Client - Disconnected");
+        nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+        safe_strcpy(nid.szTip, sizeof(nid.szTip), "Client - Disconnected");
         
-        Shell_NotifyIcon(NIM_ADD, &nid);
+        Shell_NotifyIconA(NIM_ADD, &nid);
     }
     
-    static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    static LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         WindowsClient* client = nullptr;
         
-        if (uMsg == WM_CREATE) {
-            CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
+        if (msg == WM_CREATE) {
+            CREATESTRUCTA* cs = (CREATESTRUCTA*)lParam;
             client = (WindowsClient*)cs->lpCreateParams;
-            SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)client);
+            SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)client);
         } else {
-            client = (WindowsClient*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+            client = (WindowsClient*)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
         }
         
-        if (client && uMsg == client->WM_TRAYICON) {
-            if (lParam == WM_RBUTTONUP) {
-                client->showContextMenu();
-            }
-            return 0;
+        if (client) {
+            return client->handleMessage(msg, wParam, lParam);
         }
         
-        return DefWindowProc(hwnd, uMsg, wParam, lParam);
+        return DefWindowProcA(hwnd, msg, wParam, lParam);
+    }
+    
+    LRESULT handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
+        switch (msg) {
+            case WM_TRAYICON:
+                if (LOWORD(lParam) == WM_RBUTTONUP) {
+                    showContextMenu();
+                }
+                return 0;
+                
+            case WM_COMMAND:
+                if (LOWORD(wParam) == ID_TRAY_EXIT) {
+                    shouldRun = false;
+                    PostQuitMessage(0);
+                }
+                return 0;
+                
+            default:
+                return DefWindowProcA(hwnd, msg, wParam, lParam);
+        }
     }
     
     void showContextMenu() {
-        HMENU hMenu = CreatePopupMenu();
-        AppendMenu(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
+        HMENU menu = CreatePopupMenu();
+        if (!menu) return;
         
-        POINT pt;
-        GetCursorPos(&pt);
+        AppendMenuA(menu, MF_STRING, ID_TRAY_EXIT, "Exit");
+        
+        POINT cursor;
+        GetCursorPos(&cursor);
         SetForegroundWindow(hwnd);
         
-        int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
-        
-        if (cmd == ID_TRAY_EXIT) {
-            running = false;
-            PostQuitMessage(0);
-        }
-        
-        DestroyMenu(hMenu);
+        TrackPopupMenu(menu, TPM_RIGHTBUTTON, cursor.x, cursor.y, 0, hwnd, nullptr);
+        DestroyMenu(menu);
     }
     
     void updateTrayIcon(bool isConnected) {
         if (isConnected) {
-            strcpy_s(nid.szTip, "Server Client - Connected");
+            safe_strcpy(nid.szTip, sizeof(nid.szTip), "Client - Connected");
         } else {
-            strcpy_s(nid.szTip, "Server Client - Disconnected");
+            safe_strcpy(nid.szTip, sizeof(nid.szTip), "Client - Disconnected");
         }
-        Shell_NotifyIcon(NIM_MODIFY, &nid);
+        Shell_NotifyIconA(NIM_MODIFY, &nid);
+    }
+    
+    // Thread procedures
+    static unsigned __stdcall connectionThreadProc(void* param) {
+        WindowsClient* client = static_cast<WindowsClient*>(param);
+        client->connectionLoop();
+        return 0;
+    }
+    
+    static unsigned __stdcall pingThreadProc(void* param) {
+        WindowsClient* client = static_cast<WindowsClient*>(param);
+        client->pingLoop();
+        return 0;
+    }
+    
+    static unsigned __stdcall messageThreadProc(void* param) {
+        WindowsClient* client = static_cast<WindowsClient*>(param);
+        client->messageLoop();
+        return 0;
     }
     
     void connectionLoop() {
-        while (running.load()) {
-            if (!connected.load()) {
-                // Try to connect
+        while (shouldRun) {
+            if (!connected) {
+                log("Attempting to connect...");
                 if (connectToServer()) {
                     connected = true;
                     updateTrayIcon(true);
+                    log("Connected successfully");
                     
-                    // Send connection announcement
+                    // Send initial message
                     sendMessage("CLIENT_CONNECTED");
-                    logMessage("Connected to server and announced presence");
                     
-                    // Start ping and message handling
-                    std::thread pingThread(&WindowsClient::pingLoop, this);
-                    std::thread msgThread(&WindowsClient::messageLoop, this);
+                    // Start communication threads
+                    pingThread = (HANDLE)_beginthreadex(NULL, 0, pingThreadProc, this, 0, NULL);
+                    messageThread = (HANDLE)_beginthreadex(NULL, 0, messageThreadProc, this, 0, NULL);
                     
-                    pingThread.detach();
-                    msgThread.detach();
+                    // Wait for threads to finish
+                    HANDLE threads[] = { pingThread, messageThread };
+                    WaitForMultipleObjects(2, threads, TRUE, INFINITE);
+                    
+                    if (pingThread) {
+                        CloseHandle(pingThread);
+                        pingThread = NULL;
+                    }
+                    if (messageThread) {
+                        CloseHandle(messageThread);
+                        messageThread = NULL;
+                    }
+                    
                 } else {
-                    logMessage("Failed to connect, retrying in 60 seconds...");
-                    Sleep(60000); // 1 minute retry interval
+                    log("Connection failed, retrying in 30 seconds...");
+                    Sleep(30000);
                 }
-            } else {
-                Sleep(3000); // Connected, check every 3 seconds
             }
+            Sleep(100);
         }
     }
     
     bool connectToServer() {
+        // Clean up existing socket
+        if (clientSocket != INVALID_SOCKET) {
+            closesocket(clientSocket);
+        }
+        
+        // Create socket
         clientSocket = socket(AF_INET, SOCK_STREAM, 0);
         if (clientSocket == INVALID_SOCKET) {
-            logMessage("Failed to create socket: " + std::to_string(WSAGetLastError()));
+            log("Failed to create socket: " + std::to_string(WSAGetLastError()));
             return false;
         }
         
+        // Set timeout
+        DWORD timeout = 5000; // 5 seconds
+        setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+        setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+        
+        // Setup server address
         sockaddr_in serverAddr = {};
         serverAddr.sin_family = AF_INET;
         serverAddr.sin_port = htons(serverPort);
         
-        if (inet_pton(AF_INET, serverHost.c_str(), &serverAddr.sin_addr) <= 0) {
-            logMessage("Invalid server address: " + serverHost);
+        // Convert IP address string to binary form
+        unsigned long addr = inet_addr(serverHost.c_str());
+        if (addr == INADDR_NONE) {
+            log("Invalid server address: " + serverHost);
             closesocket(clientSocket);
             clientSocket = INVALID_SOCKET;
             return false;
         }
+        serverAddr.sin_addr.s_addr = addr;
         
+        // Connect
         if (connect(clientSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+            log("Connection failed: " + std::to_string(WSAGetLastError()));
             closesocket(clientSocket);
             clientSocket = INVALID_SOCKET;
             return false;
@@ -220,180 +312,217 @@ private:
     }
     
     void pingLoop() {
-        while (connected.load() && running.load()) {
+        while (connected && shouldRun) {
             if (!sendMessage("PING")) {
-                logMessage("Ping failed - connection lost");
+                log("Ping failed - disconnecting");
                 break;
             }
-            Sleep(3000); // 3 second ping interval
+            Sleep(3000);
         }
-        
-        // Connection lost
-        connected = false;
-        updateTrayIcon(false);
-        if (clientSocket != INVALID_SOCKET) {
-            closesocket(clientSocket);
-            clientSocket = INVALID_SOCKET;
-        }
+        disconnected();
     }
     
     void messageLoop() {
         char buffer[1024];
         
-        while (connected.load() && running.load()) {
+        while (connected && shouldRun) {
             memset(buffer, 0, sizeof(buffer));
             int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
             
             if (bytesReceived <= 0) {
-                logMessage("Server disconnected");
+                if (bytesReceived == 0) {
+                    log("Server closed connection");
+                } else {
+                    log("Receive error: " + std::to_string(WSAGetLastError()));
+                }
                 break;
             }
             
             std::string message(buffer, bytesReceived);
             processMessage(message);
         }
-        
-        // Connection lost
-        connected = false;
-        updateTrayIcon(false);
-        if (clientSocket != INVALID_SOCKET) {
-            closesocket(clientSocket);
-            clientSocket = INVALID_SOCKET;
-        }
+        disconnected();
     }
     
     bool sendMessage(const std::string& message) {
-        if (clientSocket == INVALID_SOCKET || !connected.load()) {
+        if (clientSocket == INVALID_SOCKET || !connected) {
             return false;
         }
         
-        int result = send(clientSocket, message.c_str(), message.length(), 0);
-        return result != SOCKET_ERROR;
+        int result = send(clientSocket, message.c_str(), (int)message.length(), 0);
+        if (result == SOCKET_ERROR) {
+            log("Send failed: " + std::to_string(WSAGetLastError()));
+            return false;
+        }
+        
+        return true;
     }
     
     void processMessage(const std::string& message) {
-        logMessage("Received: " + message);
+        log("Received: " + message);
         
         if (message == "PONG") {
-            // Ping response - normal operation
+            // Normal ping response
             return;
         }
         else if (message == "KILL_SWITCH") {
-            logMessage("Kill switch received - shutting down");
-            running = false;
-            PostQuitMessage(0);
-            return;
+            log("Kill switch received");
+            shouldRun = false;
+            PostMessage(hwnd, WM_QUIT, 0, 0);
         }
         else if (message == "SERVER_SHUTDOWN") {
-            logMessage("Server shutdown notification received");
-            connected = false;
-            updateTrayIcon(false);
-            return;
+            log("Server shutdown notification");
+            disconnected();
         }
-        else if (message.substr(0, 4) == "MSG:") {
-            std::string actualMessage = message.substr(4);
-            logMessage("Server message: " + actualMessage);
-            
-            // Show message in system notification
-            showNotification("Server Message", actualMessage);
-            return;
+        else if (message.length() > 4 && message.substr(0, 4) == "MSG:") {
+            std::string msg = message.substr(4);
+            log("Server message: " + msg);
+            showNotification("Server Message", msg);
         }
         else if (message == "AUTO_UPDATE_CHECK") {
-            logMessage("Auto-update check received");
-            // Here you could implement auto-update logic
-            return;
+            log("Auto-update check received");
+            // Implement auto-update logic here
         }
-        
-        // Log any other messages
-        logMessage("Unknown message format: " + message);
     }
     
     void showNotification(const std::string& title, const std::string& message) {
-        // Update notification icon data
-        nid.uFlags = NIF_INFO;
-        nid.dwInfoFlags = NIIF_INFO;
+        // Simple notification using the tooltip instead of balloon tips
+        // since older Windows versions may not support balloon notifications
+        NOTIFYICONDATAA tempNid = nid;
         
-        // Convert strings to wide char for Windows API
-        MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, nid.szInfoTitle, sizeof(nid.szInfoTitle) / sizeof(wchar_t));
-        MultiByteToWideChar(CP_UTF8, 0, message.c_str(), -1, nid.szInfo, sizeof(nid.szInfo) / sizeof(wchar_t));
+        // Create a combined message for the tooltip
+        std::string combinedMsg = title + ": " + message;
+        if (combinedMsg.length() > 127) {
+            combinedMsg = combinedMsg.substr(0, 124) + "...";
+        }
         
-        Shell_NotifyIcon(NIM_MODIFY, &nid);
+        safe_strcpy(tempNid.szTip, sizeof(tempNid.szTip), combinedMsg.c_str());
+        Shell_NotifyIconA(NIM_MODIFY, &tempNid);
         
-        // Reset flags
-        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        // Also log the notification
+        log("Notification - " + title + ": " + message);
     }
     
-    void logMessage(const std::string& message) {
-        auto now = std::chrono::system_clock::now();
-        auto time_t = std::chrono::system_clock::to_time_t(now);
-        auto tm = *std::localtime(&time_t);
+    void disconnected() {
+        if (connected) {
+            connected = false;
+            updateTrayIcon(false);
+            
+            if (clientSocket != INVALID_SOCKET) {
+                closesocket(clientSocket);
+                clientSocket = INVALID_SOCKET;
+            }
+            
+            log("Disconnected from server");
+        }
+    }
+    
+    void cleanup() {
+        shouldRun = false;
+        
+        // Wait for and close threads
+        if (connectionThread) {
+            WaitForSingleObject(connectionThread, 5000);
+            CloseHandle(connectionThread);
+            connectionThread = NULL;
+        }
+        if (pingThread) {
+            WaitForSingleObject(pingThread, 1000);
+            CloseHandle(pingThread);
+            pingThread = NULL;
+        }
+        if (messageThread) {
+            WaitForSingleObject(messageThread, 1000);
+            CloseHandle(messageThread);
+            messageThread = NULL;
+        }
+        
+        // Cleanup tray icon
+        Shell_NotifyIconA(NIM_DELETE, &nid);
+        
+        // Cleanup socket
+        if (clientSocket != INVALID_SOCKET) {
+            closesocket(clientSocket);
+        }
+        
+        // Cleanup Winsock
+        WSACleanup();
+        
+        log("Client shutdown complete");
+    }
+    
+    void log(const std::string& message) {
+        EnterCriticalSection(&logMutex);
+        
+        time_t now = time(0);
+        struct tm* timeinfo = localtime(&now);
         
         std::ostringstream oss;
-        oss << "[(" << std::put_time(&tm, "%Y-%m-%d")
-            << ")(" << std::put_time(&tm, "%H:%M:%S")
-            << ")] " << message;
+        oss << "[" << std::put_time(timeinfo, "%Y-%m-%d %H:%M:%S") << "] " << message;
         
         std::string logEntry = oss.str();
         
-        // Print to console (if console is available)
+        // Console output
         std::cout << logEntry << std::endl;
         
-        // Write to log file
-        std::ofstream logFile(logFilePath, std::ios::app);
-        if (logFile.is_open()) {
-            logFile << logEntry << std::endl;
-            logFile.close();
+        // File output
+        std::ofstream file(logFilePath, std::ios::app);
+        if (file.is_open()) {
+            file << logEntry << std::endl;
         }
+        
+        LeaveCriticalSection(&logMutex);
     }
 };
 
+// Entry points
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Allocate console for debugging (optional)
+    // Enable console in debug mode
     #ifdef _DEBUG
     AllocConsole();
-    freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
-    freopen_s((FILE**)stderr, "CONOUT$", "w", stderr);
-    freopen_s((FILE**)stdin, "CONIN$", "r", stdin);
+    FILE* pCout;
+    FILE* pCerr;
+    freopen_s(&pCout, "CONOUT$", "w", stdout);
+    freopen_s(&pCerr, "CONOUT$", "w", stderr);
     #endif
     
-    std::string serverHost = "127.0.0.1"; // Default localhost
-    int serverPort = 9998;
+    std::string host = "127.0.0.1";
+    int port = 9998;
     
-    // Parse command line arguments if provided
+    // Parse command line
     if (strlen(lpCmdLine) > 0) {
-        std::string cmdLine(lpCmdLine);
-        size_t colonPos = cmdLine.find(':');
-        if (colonPos != std::string::npos) {
-            serverHost = cmdLine.substr(0, colonPos);
-            serverPort = std::stoi(cmdLine.substr(colonPos + 1));
+        std::string cmd(lpCmdLine);
+        size_t pos = cmd.find(':');
+        if (pos != std::string::npos) {
+            host = cmd.substr(0, pos);
+            port = std::stoi(cmd.substr(pos + 1));
         } else {
-            serverHost = cmdLine;
+            host = cmd;
         }
     }
     
-    WindowsClient client(serverHost, serverPort);
+    WindowsClient client(host, port);
     client.start();
     
     return 0;
 }
 
-// Alternative main for console applications
 int main(int argc, char* argv[]) {
-    std::string serverHost = "127.0.0.1";
-    int serverPort = 9998;
+    std::string host = "127.0.0.1";
+    int port = 9998;
     
     if (argc > 1) {
         std::string arg(argv[1]);
-        size_t colonPos = arg.find(':');
-        if (colonPos != std::string::npos) {
-            serverHost = arg.substr(0, colonPos);
-            serverPort = std::stoi(arg.substr(colonPos + 1));
+        size_t pos = arg.find(':');
+        if (pos != std::string::npos) {
+            host = arg.substr(0, pos);
+            port = std::stoi(arg.substr(pos + 1));
         } else {
-            serverHost = arg;
+            host = arg;
         }
     }
     
-    WindowsClient client(serverHost, serverPort);
+    WindowsClient client(host, port);
     client.start();
     
     return 0;
