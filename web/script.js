@@ -35,43 +35,75 @@ async function updateStatus() {
         lastUpdate.textContent = `Last update: ${data.timestamp}`;
     } catch (error) {
         console.error('Failed to update status:', error);
-        showNotification('Failed to connect to server', 'error');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        statusDot.className = 'status-dot disconnected';
+        statusText.textContent = 'API OFFLINE';
+        showNotification('Failed to connect to API server', 'error');
     }
 }
 
 async function refreshClients() {
     try {
         const response = await fetch('/api/clients');
-        const data = await response.text();
+        const data = await response.json();
         
-        // Parse the response (assuming it returns IP addresses)
         const clientsContainer = document.getElementById('clientsList');
         const messageTarget = document.getElementById('messageTarget');
         
-        if (data.includes('error') || data.trim() === '') {
-            clientsContainer.innerHTML = '<div class="client-item">No clients connected</div>';
-            // Reset target dropdown
-            messageTarget.innerHTML = '<option value="all">All Clients</option>';
+        // Handle different response formats
+        if (data.error) {
+            clientsContainer.innerHTML = `<div class="client-item error">Error: ${data.error}</div>`;
+            messageTarget.innerHTML = '<option value="all">All Clients (0)</option>';
+            return;
+        }
+        
+        let clientList = [];
+        
+        // Parse the clients array if it exists
+        if (data.clients && Array.isArray(data.clients)) {
+            clientList = data.clients;
+        } else if (data.clients && typeof data.clients === 'string') {
+            // Handle comma-separated string
+            clientList = data.clients.split(',').map(ip => ip.trim()).filter(ip => ip);
         } else {
-            // Parse IP addresses from response
-            const ips = data.split('\n').filter(ip => ip.trim() && !ip.includes('error'));
-            clients = ips;
-            
-            clientsContainer.innerHTML = ips.map(ip => `
+            // Fallback: look for any IP-like strings in the response
+            const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+            const responseText = JSON.stringify(data);
+            const matches = responseText.match(ipRegex);
+            if (matches) {
+                clientList = [...new Set(matches)]; // Remove duplicates
+            }
+        }
+        
+        // Update clients global variable
+        clients = clientList;
+        
+        if (clientList.length === 0) {
+            clientsContainer.innerHTML = '<div class="client-item">No clients connected</div>';
+            messageTarget.innerHTML = '<option value="all">All Clients (0)</option>';
+        } else {
+            // Display clients
+            clientsContainer.innerHTML = clientList.map((ip, index) => `
                 <div class="client-item">
-                    <span class="client-ip">${ip.trim()}</span>
+                    <span class="client-ip">${ip}</span>
                     <span class="client-status">ONLINE</span>
                 </div>
             `).join('');
             
             // Update target dropdown
-            messageTarget.innerHTML = '<option value="all">All Clients</option>' +
-                ips.map(ip => `<option value="${ip.trim()}">${ip.trim()}</option>`).join('');
+            messageTarget.innerHTML = `<option value="all">All Clients (${clientList.length})</option>` +
+                clientList.map(ip => `<option value="${ip}">${ip}</option>`).join('');
         }
+        
+        console.log('Clients updated:', clientList);
+        
     } catch (error) {
         console.error('Failed to refresh clients:', error);
         document.getElementById('clientsList').innerHTML = 
-            '<div class="client-item">Error loading clients</div>';
+            '<div class="client-item error">Error loading clients</div>';
+        document.getElementById('messageTarget').innerHTML = 
+            '<option value="all">All Clients (Error)</option>';
     }
 }
 
@@ -85,24 +117,21 @@ async function sendMessage() {
     }
     
     try {
-        const command = target === 'all' ? 
-            `message ${content}` : 
-            `message_to ${target} ${content}`;
-        
         const response = await fetch('/api/message', {
             method: 'POST',
             headers: {'Content-Type': 'text/plain'},
-            body: command
+            body: content
         });
         
-        const result = await response.text();
+        const result = await response.json();
         
-        if (response.ok) {
-            showNotification('Message sent successfully', 'success');
+        if (response.ok && !result.error) {
+            const sentCount = result.sent_to || 'unknown';
+            showNotification(`Message sent to ${sentCount} clients`, 'success');
             document.getElementById('messageContent').value = '';
             refreshLogs();
         } else {
-            showNotification('Failed to send message', 'error');
+            showNotification(`Failed to send message: ${result.error || 'Unknown error'}`, 'error');
         }
     } catch (error) {
         console.error('Failed to send message:', error);
@@ -124,14 +153,18 @@ async function executeCommand(command) {
             body: command
         });
         
-        const result = await response.text();
+        const result = await response.json();
         
-        if (response.ok) {
-            showNotification(`Command "${command}" executed`, 'success');
+        if (response.ok && !result.error) {
+            let message = `Command "${command}" executed successfully`;
+            if (result.disconnected) {
+                message += ` (${result.disconnected} clients affected)`;
+            }
+            showNotification(message, 'success');
             refreshClients();
             refreshLogs();
         } else {
-            showNotification(`Failed to execute "${command}"`, 'error');
+            showNotification(`Failed to execute "${command}": ${result.error || 'Unknown error'}`, 'error');
         }
     } catch (error) {
         console.error('Failed to execute command:', error);
@@ -145,7 +178,12 @@ async function refreshLogs() {
         const data = await response.json();
         
         const logsContainer = document.getElementById('logsContainer');
-        logsContainer.textContent = data.logs || 'No logs available';
+        
+        if (data.error) {
+            logsContainer.textContent = `Error: ${data.error}`;
+        } else {
+            logsContainer.textContent = data.logs || 'No logs available';
+        }
         
         // Auto-scroll to bottom
         logsContainer.scrollTop = logsContainer.scrollHeight;
@@ -179,3 +217,11 @@ document.addEventListener('visibilitychange', function() {
         }, 10000);
     }
 });
+
+// Debug function to test API endpoints
+window.debugAPI = function(endpoint) {
+    fetch(`/api/${endpoint}`)
+        .then(response => response.json())
+        .then(data => console.log(`${endpoint}:`, data))
+        .catch(error => console.error(`${endpoint} error:`, error));
+};

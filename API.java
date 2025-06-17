@@ -10,7 +10,7 @@ import java.text.SimpleDateFormat;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
-public class WebServerBridge {
+public class API {
     private static final int WEB_PORT = 8080;
     private static final String CPP_SERVER_HOST = "localhost";
     private static final int CPP_SERVER_PORT = 9999;
@@ -21,10 +21,12 @@ public class WebServerBridge {
     private Socket cppSocket;
     private PrintWriter cppOut;
     private BufferedReader cppIn;
-    private boolean cppConnected = false;
+    private volatile boolean cppConnected = false;
+    private long lastConnectionAttempt = 0;
+    private static final long CONNECTION_RETRY_DELAY = 5000; // 5 seconds
     
     public static void main(String[] args) {
-        new WebServerBridge().start();
+        new API().start();
     }
     
     public void start() {
@@ -38,7 +40,7 @@ public class WebServerBridge {
             server.createContext("/api/clients", new ClientsHandler());
             server.createContext("/api/message", new MessageHandler());
             server.createContext("/api/command", new CommandHandler());
-            //server.createContext("/api/logs", new LogsHandler());
+            server.createContext("/api/logs", new LogsHandler());
             server.createContext("/api/status", new StatusHandler());
             
             server.start();
@@ -59,18 +61,38 @@ public class WebServerBridge {
             while (true) {
                 try {
                     if (!cppConnected) {
-                        cppSocket = new Socket(CPP_SERVER_HOST, CPP_SERVER_PORT);
-                        cppOut = new PrintWriter(cppSocket.getOutputStream(), true);
-                        cppIn = new BufferedReader(new InputStreamReader(cppSocket.getInputStream()));
-                        cppConnected = true;
-                        System.out.println("Connected to C++ server");
+                        long currentTime = System.currentTimeMillis();
+                        if (currentTime - lastConnectionAttempt > CONNECTION_RETRY_DELAY) {
+                            lastConnectionAttempt = currentTime;
+                            
+                            // Close existing socket if any
+                            closeCppConnection();
+                            
+                            // Try to connect
+                            cppSocket = new Socket();
+                            cppSocket.setSoTimeout(3000); // 3 second timeout
+                            cppSocket.connect(new InetSocketAddress(CPP_SERVER_HOST, CPP_SERVER_PORT), 3000);
+                            
+                            cppOut = new PrintWriter(cppSocket.getOutputStream(), true);
+                            cppIn = new BufferedReader(new InputStreamReader(cppSocket.getInputStream()));
+                            cppConnected = true;
+                            System.out.println("Connected to C++ server");
+                        }
+                    } else {
+                        // Test connection with a ping
+                        if (!testConnection()) {
+                            cppConnected = false;
+                            closeCppConnection();
+                            System.err.println("Lost connection to C++ server");
+                        }
                     }
                     Thread.sleep(5000);
                 } catch (Exception e) {
                     cppConnected = false;
+                    closeCppConnection();
                     System.err.println("C++ server connection failed: " + e.getMessage());
                     try {
-                        Thread.sleep(10000); // Retry every 10 seconds
+                        Thread.sleep(5000);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         break;
@@ -82,29 +104,75 @@ public class WebServerBridge {
         connectionThread.start();
     }
     
-    private String sendCommandToCpp(String command) {
-        if (!cppConnected) {
+    private boolean testConnection() {
+        try {
+            if (cppSocket != null && !cppSocket.isClosed() && cppSocket.isConnected()) {
+                return true;
+            }
+        } catch (Exception e) {
+            // Connection is bad
+        }
+        return false;
+    }
+    
+    private void closeCppConnection() {
+        try {
+            if (cppOut != null) {
+                cppOut.close();
+                cppOut = null;
+            }
+            if (cppIn != null) {
+                cppIn.close();
+                cppIn = null;
+            }
+            if (cppSocket != null && !cppSocket.isClosed()) {
+                cppSocket.close();
+            }
+        } catch (Exception e) {
+            // Ignore cleanup errors
+        }
+    }
+    
+    private synchronized String sendCommandToCpp(String command) {
+        if (!cppConnected || cppOut == null || cppIn == null) {
             return "{\"error\": \"C++ server not connected\"}";
         }
         
         try {
             cppOut.println(command);
+            cppOut.flush();
+            
             StringBuilder response = new StringBuilder();
             String line;
-            long timeout = System.currentTimeMillis() + 5000; // 5 second timeout
+            long timeout = System.currentTimeMillis() + 10000; // 10 second timeout
+            boolean foundEnd = false;
             
-            while (System.currentTimeMillis() < timeout) {
+            while (System.currentTimeMillis() < timeout && !foundEnd) {
                 if (cppIn.ready()) {
                     line = cppIn.readLine();
                     if (line != null) {
-                        response.append(line).append("\n");
-                        if (line.equals("END_RESPONSE")) break;
+                        if (line.equals("END_RESPONSE")) {
+                            foundEnd = true;
+                            break;
+                        }
+                        if (response.length() > 0) {
+                            response.append("\n");
+                        }
+                        response.append(line);
                     }
+                } else {
+                    Thread.sleep(50);
                 }
-                Thread.sleep(50);
             }
             
-            return response.toString().trim();
+            if (!foundEnd && response.length() == 0) {
+                cppConnected = false;
+                return "{\"error\": \"No response from C++ server\"}";
+            }
+            
+            String result = response.toString().trim();
+            return result.isEmpty() ? "{\"error\": \"Empty response\"}" : result;
+            
         } catch (Exception e) {
             cppConnected = false;
             return "{\"error\": \"Communication failed: " + e.getMessage() + "\"}";
@@ -156,6 +224,12 @@ public class WebServerBridge {
         public void handle(HttpExchange exchange) throws IOException {
             if ("GET".equals(exchange.getRequestMethod())) {
                 String response = sendCommandToCpp("show_ips");
+                
+                // Ensure we always return valid JSON
+                if (!response.startsWith("{") && !response.startsWith("[")) {
+                    response = "{\"error\": \"Invalid response format\", \"raw\": \"" + escapeJson(response) + "\"}";
+                }
+                
                 sendJsonResponse(exchange, 200, response);
             } else {
                 sendJsonResponse(exchange, 405, "{\"error\": \"Method not allowed\"}");
@@ -169,6 +243,12 @@ public class WebServerBridge {
             if ("POST".equals(exchange.getRequestMethod())) {
                 String body = readRequestBody(exchange);
                 String response = sendCommandToCpp("message " + body);
+                
+                // Ensure valid JSON response
+                if (!response.startsWith("{") && !response.startsWith("[")) {
+                    response = "{\"error\": \"Invalid response format\", \"raw\": \"" + escapeJson(response) + "\"}";
+                }
+                
                 sendJsonResponse(exchange, 200, response);
             } else {
                 sendJsonResponse(exchange, 405, "{\"error\": \"Method not allowed\"}");
@@ -182,6 +262,12 @@ public class WebServerBridge {
             if ("POST".equals(exchange.getRequestMethod())) {
                 String body = readRequestBody(exchange);
                 String response = sendCommandToCpp(body);
+                
+                // Ensure valid JSON response
+                if (!response.startsWith("{") && !response.startsWith("[")) {
+                    response = "{\"success\": true, \"message\": \"" + escapeJson(response) + "\"}";
+                }
+                
                 sendJsonResponse(exchange, 200, response);
             } else {
                 sendJsonResponse(exchange, 405, "{\"error\": \"Method not allowed\"}");
@@ -197,7 +283,7 @@ public class WebServerBridge {
                     String logs = readLogFile();
                     sendJsonResponse(exchange, 200, "{\"logs\": \"" + escapeJson(logs) + "\"}");
                 } catch (Exception e) {
-                    sendJsonResponse(exchange, 500, "{\"error\": \"Failed to read logs\"}");
+                    sendJsonResponse(exchange, 500, "{\"error\": \"Failed to read logs: " + escapeJson(e.getMessage()) + "\"}");
                 }
             } else {
                 sendJsonResponse(exchange, 405, "{\"error\": \"Method not allowed\"}");
@@ -218,8 +304,11 @@ public class WebServerBridge {
     class StatusHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            String status = "{\"server_connected\": " + cppConnected + ", \"timestamp\": \"" + 
-                           new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()) + "\"}";
+            String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+            String status = String.format(
+                "{\"server_connected\": %s, \"timestamp\": \"%s\", \"last_attempt\": %d}", 
+                cppConnected, timestamp, lastConnectionAttempt
+            );
             sendJsonResponse(exchange, 200, status);
         }
     }
@@ -243,13 +332,15 @@ public class WebServerBridge {
         exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
         
-        exchange.sendResponseHeaders(statusCode, response.getBytes().length);
+        byte[] responseBytes = response.getBytes();
+        exchange.sendResponseHeaders(statusCode, responseBytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
-            os.write(response.getBytes());
+            os.write(responseBytes);
         }
     }
     
     private String escapeJson(String text) {
+        if (text == null) return "";
         return text.replace("\\", "\\\\")
                   .replace("\"", "\\\"")
                   .replace("\n", "\\n")
