@@ -1,4 +1,4 @@
-/* Retro Server Management Interface Styles */
+
 * {
     margin: 0;
     padding: 0;
@@ -231,7 +231,7 @@ textarea {
 }
 
 .timestamp {
-    color: #808080;
+    color: #ADD8E6;
     font-size: 10px;
     font-style: italic;
 }
