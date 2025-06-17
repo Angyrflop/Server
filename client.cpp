@@ -508,7 +508,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 }
 
 int main(int argc, char* argv[]) {
-    std::string host = "127.0.0.1";
+    std::string host = "192.168.2.145";
     int port = 9998;
     
     if (argc > 1) {

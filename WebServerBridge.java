@@ -38,7 +38,7 @@ public class WebServerBridge {
             server.createContext("/api/clients", new ClientsHandler());
             server.createContext("/api/message", new MessageHandler());
             server.createContext("/api/command", new CommandHandler());
-            server.createContext("/api/logs", new LogsHandler());
+            //server.createContext("/api/logs", new LogsHandler());
             server.createContext("/api/status", new StatusHandler());
             
             server.start();
