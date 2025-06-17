@@ -164,35 +164,35 @@ Web-based GUI (HTML/CSS/JS)
 
 Windows C++ client application
 
-Plans:
-New features:
--Call function (Pings Address)
--RAID start/shutdown (Opens Applications randomly(eg., cmd))
--DELETE (uninstalls itself on the spefic client)
--SILENCE (Temporally silences output on the client side)
--Encryption toggle (Cipher encryption)
+    Plans:
+        New features:
+        -Call function (Pings Address)
+        -RAID start/shutdown (Opens Applications randomly(eg., cmd))
+        -DELETE (uninstalls itself on the spefic client)
+        -SILENCE (Temporally silences output on the client side)
+        -Encryption toggle (Cipher encryption)
 
-Reworks:
--Log system (Should'nt log everything, only Errors)
--GUI (slight GUI improvements, like creating a CC (command center(All actions/Everything))) and a VC (Viewing Center(Only readable stuff like what clients join'd))
-    -On top of the website will be 2 buttons, 1 CC, 2 VC (To switch between centers)
--API (Improve responsiveness and make all functions work)
--Client side (Window should'nt show at all, only in debug versions. Also trying to decrease system usage.)
+    Reworks:
+        -Log system (Should'nt log everything, only Errors)
+        -GUI (slight GUI improvements, like creating a CC (command center(All actions/Everything))) and a VC (Viewing Center(Only readable stuff like what clients join'd))
+            -On top of the website will be 2 buttons, 1 CC, 2 VC (To switch between centers)
+        -API (Improve responsiveness and make all functions work)
+        -Client side (Window should'nt show at all, only in debug versions. Also trying to decrease system usage.)
 
-Known Problems:
--Messages currently being reported as error's, even tho they work
--Message system sends the given message to all clients, even when only having a spefic client selected
--Im fucking stupid and cant code.
+    Known Problems:
+        -Messages currently being reported as error's, even tho they work
+        -Message system sends the given message to all clients, even when only having a spefic client selected
+        -Im fucking stupid and cant code.
 
-Roadmap:
-1. Fixing known problems.
-2. Reworking API and client side.
-3. adding new functions.
-4. Reworking GUI.
-5. Reveal Project to Jemmy.
-6. Test outside local network.
-7. Test in unplanned scenes.
-8. Simulating stress to server.
-9. Add even more features.
+    Roadmap:
+        1. Fixing known problems.
+        2. Reworking API and client side.
+        3. adding new functions.
+        4. Reworking GUI.
+        5. Reveal Project to Jemmy.
+        6. Test outside local network.
+        7. Test in unplanned scenes.
+        8. Simulating stress to server.
+        9. Add even more features.
 
 
