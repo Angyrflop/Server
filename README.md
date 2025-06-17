@@ -140,11 +140,8 @@ Connection failures: Check firewall settings
 
 Compilation errors: Verify all dependencies are installed
 
-License
-[Specify your license here]
-
 Contributors
-[Your name/contact information]
+[AngyrFlop/justanyordinarydude@gmail.com]
 
 Future Enhancements
 Client auto-update capability
@@ -154,11 +151,6 @@ Server clustering for high availability
 Mobile-friendly web interface
 
 Enhanced security features
-
-Would you like me to elaborate on any specific section or add more details about particular components?
-
-shit i forgot to say that the client is in a windows envir
-No problem! Here's the updated README.md with Windows client support added, along with necessary adjustments for cross-platform compatibility:
 
 Project Name - Cross-Platform Server/Client System
 Overview
@@ -172,80 +164,35 @@ Web-based GUI (HTML/CSS/JS)
 
 Windows C++ client application
 
-Components
-1. Server Components (Linux)
-server.cpp features:
+Plans:
+New features:
+-Call function (Pings Adress)
+-RAID start/shutdown (Opens Applications randomly(eg., cmd)
+-DELETE (uninstalls itself on the spefic client)
+-SILENCE (Temporaly silences output on the client side)
+-Encryption toggle (Cipher encryption)
 
-Auto-update broadcast to all connected clients
+Reworks:
+-Log system (Shouldnt log everything, only Errors)
+-GUI (slight GUI improvements, like creating a CC (command center(All actions/Everything)) and a VC (Viewing Center(Only readable stuff like what clients join'd)
+    -On top of the website will be 2 buttons, 1 CC, 2 VC (To switch between centers)
+-API (Improve responsivness and make all functions work)
+-Client side (Window shouldnt show at all, only in debug versions. Also trying to decrease system usage.)
 
-Cross-platform client management:
+Known Problems:
+-Messages currently being reported as error's, even tho they work
+-Message system sends the given message to all clients, even when only having a spefic client selected
+-Im fucking stupid and cant code.
 
-message() - Send messages to Windows/Linux clients
+Roadmap:
+1. Fixing known problems.
+2. Reworking API and client side.
+3. adding new functions.
+4. Reworking GUI.
+5. Reveal Project to Jemmy.
+6. Test outside local network.
+7. Test in unplanned scenes.
+8. Simulating stress to server.
+9. Add even more features.
 
-stop() - Gracefully shutdown server
 
-kill_switch() - Force disconnect all clients (Windows-compatible)
-
-show_ips() - Display all connected client IPv4 addresses
-
-Logging format:
-[(YYYY-MM-DD)(HH:MM:SS)] send to [IP] {"Message content..."}
-
-Java Web Server:
-
-REST API endpoints for all C++ server functions
-
-Handles Windows client ping differences (1-minute retry)
-
-2. Windows Client (client.cpp)
-Windows-specific behaviors:
-
-Uses WinSock2.h for networking (instead of POSIX sockets)
-
-Persistent system tray icon with connection status
-
-Compiled as .exe with Visual Studio/MinGW
-
-Connection workflow:
-
-cpp
-while (true) {
-    if (server_online) {
-        send("CLIENT_CONNECTED");
-        Sleep(3000); // Windows Sleep() in milliseconds
-    } else {
-        Sleep(60000); // 1-minute retry
-    }
-}
-Logs to %APPDATA%\client_log.txt
-
-Cross-Platform Considerations
-Component	Linux Server	Windows Client
-Networking	POSIX sockets	WinSock2
-Ping Interval	System clock	Sleep() (ms)
-Compiler	g++	Visual Studio/MinGW
-Log Location	/var/log/server.log	%APPDATA%\client_log.txt
-Build Instructions
-Linux Server:
-bash
-g++ -o server server.cpp -lpthread
-Windows Client (Visual Studio):
-Link Ws2_32.lib in project settings
-
-Use WinSock2 compatible code:
-
-cpp
-#include <winsock2.h>
-#pragma comment(lib, "ws2_32.lib")
-Deployment Notes
-Windows Client Requirements:
-DLL Dependencies:
-
-MSVCR120.dll (Visual Studio 2013)
-
-WS2_32.dll (Windows Sockets)
-
-Network Configuration:
-Allow Windows Defender Firewall exceptions for client.exe
-
-Test NAT traversal for cross-subnet communication
