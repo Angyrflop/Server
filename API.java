@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.text.SimpleDateFormat;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
+import org.json.JSONObject;
 
 public class API {
     private static final int WEB_PORT = 8080;
@@ -241,8 +242,19 @@ public class API {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             if ("POST".equals(exchange.getRequestMethod())) {
-                String body = readRequestBody(exchange);
-                String response = sendCommandToCpp("message " + body);
+        String requestBody = readRequestBody(exchange);
+        JSONObject jsonBody = new JSONObject(requestBody);
+        String target = jsonBody.getString("target");
+        String messageContent = jsonBody.getString("message");
+
+    String commandToSend;
+if ("all".equalsIgnoreCase(target)) {
+    commandToSend = "message_all " + messageContent; // New command for all clients
+} else {
+    commandToSend = "message_single " + target + " " + messageContent; // New command for single client
+}
+
+String response = sendCommandToCpp(commandToSend);
                 
                 // Ensure valid JSON response
                 if (!response.startsWith("{") && !response.startsWith("[")) {
@@ -256,24 +268,29 @@ public class API {
         }
     }
     
-    class CommandHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if ("POST".equals(exchange.getRequestMethod())) {
-                String body = readRequestBody(exchange);
-                String response = sendCommandToCpp(body);
-                
-                // Ensure valid JSON response
-                if (!response.startsWith("{") && !response.startsWith("[")) {
-                    response = "{\"success\": true, \"message\": \"" + escapeJson(response) + "\"}";
-                }
-                
-                sendJsonResponse(exchange, 200, response);
-            } else {
-                sendJsonResponse(exchange, 405, "{\"error\": \"Method not allowed\"}");
+class CommandHandler implements HttpHandler {
+    @Override
+    public void handle(HttpExchange exchange) throws IOException {
+        if ("POST".equals(exchange.getRequestMethod())) {
+            // Read the request body and parse it as a JSON object
+            String requestBody = readRequestBody(exchange);
+            JSONObject jsonBody = new JSONObject(requestBody);
+            // Extract the "command" value from the JSON
+            String command = jsonBody.getString("command");
+            
+            String response = sendCommandToCpp(command);
+            
+            // Ensure valid JSON response
+            if (!response.startsWith("{") && !response.startsWith("[")) {
+                response = "{\"success\": true, \"message\": \"" + escapeJson(response) + "\"}";
             }
+            
+            sendJsonResponse(exchange, 200, response);
+        } else {
+            sendJsonResponse(exchange, 405, "{\"error\": \"Method not allowed\"}");
         }
     }
+}
     
     class LogsHandler implements HttpHandler {
         @Override

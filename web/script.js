@@ -119,8 +119,8 @@ async function sendMessage() {
     try {
         const response = await fetch('/api/message', {
             method: 'POST',
-            headers: {'Content-Type': 'text/plain'},
-            body: content
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ target: target, message: content })
         });
         
         const result = await response.json();
@@ -149,8 +149,10 @@ async function executeCommand(command) {
     try {
         const response = await fetch('/api/command', {
             method: 'POST',
-            headers: {'Content-Type': 'text/plain'},
-            body: command
+            // Set the correct Content-Type to application/json
+            headers: {'Content-Type': 'application/json'}, 
+            // Send the command within a JSON object
+            body: JSON.stringify({ command: command }) 
         });
         
         const result = await response.json();

@@ -38,7 +38,24 @@ private:
     const int CLIENT_PORT = 9998;
     const int JAVA_PORT = 9999;
     const std::string LOG_FILE = "server.log";
-    
+        // Add this private function to ServerManager class
+std::string sendMessageToClient(const std::string& targetIp, const std::string& message) {
+    std::lock_guard<std::mutex> lock(clientsMutex);
+    for (auto& client : clients) {
+        if (client.connected && client.ip == targetIp) {
+            std::string fullMessage = "MSG:" + message;
+            if (send(client.socket, fullMessage.c_str(), fullMessage.length(), 0) > 0) {
+                logMessage("Send to " + client.ip + " {\"" + message + "\"}");
+                return "{\"sent_to\": \"" + targetIp + "\", \"status\": \"success\"}";
+            } else {
+                client.connected = false; // Mark as disconnected if send fails
+                logMessage("Failed to send to " + client.ip);
+                return "{\"error\": \"Failed to send to " + targetIp + "\"}";
+            }
+        }
+    }
+    return "{\"error\": \"Client " + targetIp + " not found or not connected\"}";
+}
 public:
     ServerManager() : running(false), serverSocket(-1), javaSocket(-1) {}
     
@@ -243,37 +260,49 @@ private:
         logMessage("Java bridge disconnected");
     }
     
-    std::string processCommand(const std::string& command) {
+std::string processCommand(const std::string& command) {
         std::istringstream iss(command);
         std::string cmd;
         iss >> cmd;
         
-        if (cmd == "message") {
+        if (cmd == "message_all") { // Changed to 'if'
             std::string message = command.substr(cmd.length());
             if (!message.empty() && message[0] == ' ') {
                 message = message.substr(1);
             }
             return sendMessageToClients(message);
         }
+        else if (cmd == "message_single") {
+            std::string args = command.substr(cmd.length() + 1);
+            size_t firstSpace = args.find(' ');
+            if (firstSpace == std::string::npos) {
+                return "{\"error\": \"Invalid message_single command format\"}";
+            }
+            std::string targetIp = args.substr(0, firstSpace);
+            std::string message = args.substr(firstSpace + 1);
+            return sendMessageToClient(targetIp, message);
+        }
+        // You should add handling for other commands here (e.g., "show_ips", "kill_switch", "stop", "help")
+        // Example:
         else if (cmd == "show_ips") {
             return showConnectedIPs();
         }
         else if (cmd == "kill_switch") {
-            return killSwitch();
+            return killSwitch(); // Make sure killSwitch returns a string
         }
         else if (cmd == "stop") {
-            stop();
-            return "{\"status\": \"Server stopping\"}";
+            stop(); // stop() calls exit(0), so it doesn't return a string
+            return "{\"status\": \"Server stopping\"}"; // Or handle appropriately
         }
         else if (cmd == "help") {
-            return "{\"help\": \"Available commands: message, show_ips, kill_switch, stop\"}";
+             return "{\"info\": \"Available commands: message_all <text>, message_single <ip> <text>, show_ips, kill_switch, stop, help\"}";
         }
         else {
-            return "{\"error\": \"Unknown command: " + cmd + "\"}";
+            return "{\"error\": \"Unknown command\"}";
         }
     }
     
-    std::string sendMessageToClients(const std::string& message) {
+std::string sendMessageToClients(const std::string& message) {
         std::lock_guard<std::mutex> lock(clientsMutex);
         int sentCount = 0;
         
@@ -290,7 +319,7 @@ private:
             }
         }
         
-        return "{\"sent_to\": " + std::to_string(sentCount) + " clients\"}";
+        return "{\"sent_clients\": " + std::to_string(sentCount) + "}"; // Corrected JSON
     }
     
     std::string showConnectedIPs() {
@@ -311,9 +340,9 @@ private:
         return oss.str();
     }
     
-    std::string killSwitch() {
+std::string killSwitch() {
         std::lock_guard<std::mutex> lock(clientsMutex);
-        int disconnectedCount = 0;
+        int disconnectedCount = 0; // This variable is correctly defined within killSwitch
         
         for (auto& client : clients) {
             if (client.connected) {
@@ -326,7 +355,7 @@ private:
         }
         
         clients.clear();
-        return "{\"disconnected\": " + std::to_string(disconnectedCount) + " clients\"}";
+        return "{\"disconnected_clients\": " + std::to_string(disconnectedCount) + "}"; // Corrected return
     }
     
     void stop() {
