@@ -162,6 +162,7 @@ A user-friendly web interface built with HTML, CSS, and JavaScript.
 4.  Rework and enhance the Web GUI.
 5.  Project reveal and demonstration to Jemmy.
 6.  Thorough testing outside the local network.
-7.  Testing in unplanned scenarios.
-8.  Stress testing and simulation on the server.
-9.  Further feature additions and refinements.
+7.  Add Whitelist on who will be able to access the website.
+8.  Testing in unplanned scenarios.
+9.  Stress testing and simulation on the server.
+10.  Further feature additions and refinements.
