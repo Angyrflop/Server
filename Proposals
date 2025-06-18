@@ -1,0 +1,4 @@
+For auto update function,
+-Make folder "Clients/" with an .exe in it.
+the system compares the file size,
+if ! then the client gets replaced.
